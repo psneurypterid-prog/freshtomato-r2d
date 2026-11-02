@@ -4,11 +4,7 @@ Unofficial port of [FreshTomato-ARM](https://bitbucket.org/pedro311/freshtomato-
 (小米路由器 / "Mi Router" 2015, BCM4709, 512 MB NAND, built-in 1 TB HDD).
 Not to be confused with the R1D (FreshTomato already supports it) or the R3D ("Mi Router HD").
 
-> **AI-made.** Almost everything here — reverse engineering of the bootloader, flash layout and fan hardware,
-> the kernel/rc patches, the fan controller, initramfs, installer and build scripts, this README — was done by an
-> AI agent (Anthropic Claude via Claude Code) with a human only setting goals, approving flash writes and
-> plugging cables. Code review was also done by an AI. It was tested on real hardware, but no human has read
-> all of the code line by line. Keep that in mind.
+> Almost all of this was written by an AI agent (Claude Code); a human set the goals and tested it on the router.
 
 *Русская версия ниже.*
 
@@ -104,10 +100,7 @@ GPL-2.0, like FreshTomato and the Linux kernel.
 Неофициальный порт FreshTomato-ARM на **Xiaomi Mi Router R2D** (2015, BCM4709, NAND 512 МБ, встроенный HDD 1 ТБ).
 Не путать с R1D (его FreshTomato поддерживает официально) и R3D (Mi Router HD).
 
-> **Сделано ИИ.** Почти всё здесь — разбор загрузчика, разметки флеша и железа вентилятора, патчи ядра и rc,
-> контроллер вентилятора, initramfs, установщик, скрипты сборки и этот README — сделал ИИ-агент
-> (Anthropic Claude в Claude Code). Человек ставил задачи, разрешал запись во флеш и переключал провода.
-> Ревью кода тоже делал ИИ. Всё проверено на живом роутере, но построчно код человек не читал.
+> Почти всё здесь написал ИИ-агент (Claude Code); человек ставил задачи и проверял на роутере.
 
 Проверено на одном роутере со стоковой 2.25.209. Всё на свой риск.
 
