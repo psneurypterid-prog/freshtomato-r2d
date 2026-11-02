@@ -19,7 +19,7 @@ Tested on one router with stock ROM 2.25.209. Use at your own risk.
 | Entware | built-in `entware-install.sh` (armv7sf-k2.6 repo, frozen since 2024) |
 
 Not supported: upgrading from the FreshTomato web UI. To upgrade, go back to stock and run the new `install.sh`
-(settings live in nvram and are kept).
+(FreshTomato settings live in nvram and are kept).
 
 ## How it works
 
@@ -37,7 +37,7 @@ You need root SSH on the stock firmware.
    hold Reset, power on, release Reset when the LED blinks yellow. (Worked on the stable ROM despite the page saying
    "developer ROM only".)
 2. **Copy the release** (`freshtomato-r2d-<version>.tar.gz` from Releases) onto the internal HDD (e.g. via the stock
-   Samba share) or a USB stick.
+   Samba share; on stock it is `/userdisk/data`) or a USB stick (then use its mount point from `mount`).
 3. **Run the installer** over SSH (`ssh root@192.168.31.1`; old dropbear may need
    `-o KexAlgorithms=+diffie-hellman-group14-sha1 -o HostKeyAlgorithms=+ssh-rsa`):
    ```sh
@@ -46,7 +46,7 @@ You need root SSH on the stock firmware.
    reboot
    ```
    If stock currently runs from slot 0, the installer refuses and prints the command to switch to slot 1 first.
-   The slot is switched only after both written partitions have been read back and verified.
+   The slot is switched only after the kernel in `os0` has been read back and the new rootfs mounted and checked.
 4. After ~1 minute: **http://192.168.1.1**, login `root` / `admin` — **change the password**.
    Wi-Fi: `FreshTomato24` / `FreshTomato50` with the Wi-Fi password you had on stock (open if stock Wi-Fi had none).
 
@@ -57,7 +57,7 @@ From FreshTomato: `sh uninstall.sh` (in the release archive), or
 
 ## Recovery
 
-- If the FreshTomato rootfs is missing or broken, the boot initramfs starts a rescue telnet shell on
+- If the FreshTomato rootfs is missing or cannot be mounted, the boot initramfs starts a rescue telnet shell on
   `192.168.1.1` (LAN, no password) for 10 minutes, then reboots.
 - The bootloader (CFE) does not verify signatures. With nvram `flag_tftp_bootup=on` it tries to RAM-boot
   `192.168.1.2:vmlinuz` over TFTP on every boot (costs ~20 s when no server answers); with `boot_wait=on` it

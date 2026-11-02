@@ -12,6 +12,7 @@
 set -euo pipefail
 
 T=$(readlink -f "$1")
+mkdir -p "$2"
 OUT=$(readlink -f "$2")
 VER=${3:-$(date +%Y%m%d)}
 HERE=$(dirname "$(readlink -f "$0")")

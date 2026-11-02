@@ -1,14 +1,5 @@
---- /root/kernel-config.orig	2026-11-01 17:20:13.031298733 +0000
-+++ .config	2026-11-02 10:04:13.959758725 +0000
-@@ -1,7 +1,7 @@
- #
- # Automatically generated make config: don't edit
- # Linux kernel version: 2.6.36.4
--# Sun Nov  1 17:02:14 2026
-+# Mon Nov  2 10:04:13 2026
- #
- CONFIG_ARM=y
- CONFIG_SYS_SUPPORTS_APM_EMULATION=y
+--- .config.orig
++++ .config
 @@ -74,11 +74,15 @@
  # CONFIG_PID_NS is not set
  CONFIG_NET_NS=y
