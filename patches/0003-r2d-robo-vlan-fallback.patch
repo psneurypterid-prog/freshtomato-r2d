@@ -1,0 +1,36 @@
+diff --git a/release/src-rt-6.x.4708/shared/bcmrobo.c b/release/src-rt-6.x.4708/shared/bcmrobo.c
+index e7bd5b748..127e11ebb 100644
+--- a/release/src-rt-6.x.4708/shared/bcmrobo.c
++++ b/release/src-rt-6.x.4708/shared/bcmrobo.c
+@@ -1600,6 +1600,15 @@ robo_cpu_port_upd(robo_info_t *robo, pdesc_t *pdesc, int pdescsz)
+ 			}
+ 		}
+ 
++		/* Xiaomi R2D port: stock nvram has vlanNports but no vlanNvid -> classic Broadcom mapping (vid == N) */
++		if (!ports && !getvar(robo->vars, "vlan1vid")) {
++			const char *mdl = getvar(robo->vars, "model");
++			if (mdl && !strcmp(mdl, "R2D")) {
++				sprintf(vlanports, "vlan%dports", vid);
++				ports = getvar(robo->vars, vlanports);
++			}
++		}
++
+ 		if (!ports)
+ 			continue;
+ 
+@@ -2077,6 +2086,15 @@ bcm_robo_config_vlan(robo_info_t *robo, uint8 *mac_addr)
+ 			}
+ 		}
+ 
++		/* Xiaomi R2D port: stock nvram has vlanNports but no vlanNvid -> classic Broadcom mapping (vid == N) */
++		if (!ports && !getvar(robo->vars, "vlan1vid")) {
++			const char *mdl = getvar(robo->vars, "model");
++			if (mdl && !strcmp(mdl, "R2D")) {
++				sprintf(vlanports, "vlan%dports", vid);
++				ports = getvar(robo->vars, vlanports);
++			}
++		}
++
+ #ifdef VID_MAP_DBG
+ 		if (ports)
+ 			printk(KERN_EMERG "bcmrobo: VLAN %d mapped to VID %d, ports='%s'\n", vid, vid, ports);

@@ -1,0 +1,4 @@
+out/
+*.tar.gz
+*.trx
+*.ubi

@@ -1,0 +1,233 @@
+diff --git a/release/src-rt-6.x.4708/router/rc/init.c b/release/src-rt-6.x.4708/router/rc/init.c
+index 3d4bcb606..72637e849 100644
+--- a/release/src-rt-6.x.4708/router/rc/init.c
++++ b/release/src-rt-6.x.4708/router/rc/init.c
+@@ -1232,7 +1232,7 @@ static int init_vlan_ports(void)
+ 		dirty |= check_nv("vlan2ports", "0 5");
+ 		break;
+ 	case MODEL_R1D:
+-		dirty |= check_nv("vlan1ports", "0 2 5*");
++		dirty |= check_nv("vlan1ports", nvram_match("model", "R2D") ? "0 2 3 5*" : "0 2 5*");
+ 		dirty |= check_nv("vlan2ports", "4 5");
+ 		break;
+ 
+@@ -2183,6 +2183,113 @@ static void set_reversed_dualband_defaults(void)
+ }
+ #endif /* TCONFIG_BLINK */
+ 
++/* Xiaomi R2D: the stock firmware keeps a hidden, unencrypted provisioning AP "miwifi_ready" (wl1.3) in the
++ * shared nvram, and the stock fallback (os1) recreates it. Drop every wlX.Y_* key whose set has SSID miwifi_ready. */
++static void r2d_drop_miwifi_ready(void)
++{
++	char *buf, *name, *eq, prefix[16], key[32];
++	int u, v, n, dropped = 0;
++
++	for (u = 0; u <= 1; u++) {
++		for (v = 1; v <= 3; v++) {
++			snprintf(prefix, sizeof(prefix), "wl%d.%d_", u, v);
++			snprintf(key, sizeof(key), "%sssid", prefix);
++			if (!nvram_match(key, "miwifi_ready"))
++				continue;
++			if (!(buf = malloc(MAX_NVRAM_SPACE)))
++				return;
++			nvram_getall(buf, MAX_NVRAM_SPACE);
++			n = strlen(prefix);
++			/* the buffer is a private copy: cut "key=value" to "key" in place, then unset */
++			for (name = buf; *name; name += strlen(name) + 1) {
++				if (strncmp(name, prefix, n) != 0)
++					continue;
++				if ((eq = strchr(name, '=')) != NULL) {
++					*eq = 0;
++					nvram_unset(name);
++					dropped++;
++					*eq = '=';	/* restore so the walk continues over the full entry */
++				}
++			}
++			free(buf);
++			syslog(LOG_INFO, "R2D: removed Xiaomi provisioning AP %s* (miwifi_ready)", prefix);
++		}
++	}
++	if (dropped)
++		nvram_commit();
++}
++
++/* Xiaomi R2D: the internal SATA disk (ahci) is probed before userspace exists, so its block uevents
++ * never reach the hotplug handler. Replay "add" for its partitions once rc is ready. */
++static void r2d_coldplug_sata(void)
++{
++	DIR *bd, *pd;
++	struct dirent *be, *pe;
++	char lnk[256], pth[160], pn[16], *h;
++	int n;
++
++	if ((bd = opendir("/sys/block")) == NULL)
++		return;
++	while ((be = readdir(bd)) != NULL) {
++		if (strncmp(be->d_name, "sd", 2) != 0)
++			continue;
++		snprintf(pth, sizeof(pth), "/sys/block/%s/device", be->d_name);
++		if ((n = readlink(pth, lnk, sizeof(lnk) - 1)) <= 0)
++			continue;
++		lnk[n] = 0;
++		if ((h = strstr(lnk, "/host")) == NULL)
++			continue;
++		snprintf(pth, sizeof(pth), "/sys/class/scsi_host/host%d/proc_name", atoi(h + 5));
++		if (f_read_string(pth, pn, sizeof(pn)) <= 0 || strncmp(pn, "ahci", 4) != 0)
++			continue;
++		snprintf(pth, sizeof(pth), "/sys/block/%s", be->d_name);
++		if ((pd = opendir(pth)) == NULL)
++			continue;
++		while ((pe = readdir(pd)) != NULL) {
++			if (strncmp(pe->d_name, be->d_name, strlen(be->d_name)) != 0)
++				continue;
++			snprintf(pth, sizeof(pth), "/sys/block/%s/%s/uevent", be->d_name, pe->d_name);
++			f_write_string(pth, "add", 0, 0);
++		}
++		closedir(pd);
++	}
++	closedir(bd);
++}
++
++/* Xiaomi R2D: Wi-Fi encryption and key are inherited from the stock nvram (wlN_akm/_crypto/_wpa_psk), but the
++ * web UI shows wlN_security_mode, which the stock firmware does not set. Derive it once on the first boot so the
++ * UI tells the truth - otherwise saving the Wireless page unchanged would turn the network into an open one. */
++static void r2d_sync_wl_security(void)
++{
++	char akm[64], name[32], *w, *save;
++	const char *mode;
++	int u, psk, psk2;
++
++	for (u = 0; u <= 1; u++) {
++		snprintf(name, sizeof(name), "wl%d_akm", u);
++		strlcpy(akm, nvram_safe_get(name), sizeof(akm));
++		psk = psk2 = 0;
++		for (w = strtok_r(akm, " ", &save); w; w = strtok_r(NULL, " ", &save)) {
++			if (!strcmp(w, "psk"))
++				psk = 1;
++			else if (!strcmp(w, "psk2"))
++				psk2 = 1;
++		}
++		snprintf(name, sizeof(name), "wl%d_wpa_psk", u);
++		if ((psk || psk2) && strlen(nvram_safe_get(name)) >= 8)
++			mode = (psk && psk2) ? "wpaX_personal" : (psk2 ? "wpa2_personal" : "wpa_personal");
++		else {
++			mode = "disabled";
++			snprintf(name, sizeof(name), "wl%d_akm", u);
++			nvram_set(name, "");
++		}
++		snprintf(name, sizeof(name), "wl%d_security_mode", u);
++		nvram_set(name, mode);
++		snprintf(name, sizeof(name), "wl%d_auth_mode", u);
++		nvram_set(name, "none");
++	}
++}
++
+ static int init_nvram(void)
+ {
+ 	int model;
+@@ -8480,10 +8587,13 @@ static int init_nvram(void)
+ 		nvram_set("usb_usb3", "-1"); /* R1D doesn't have USB 3.0 */
+ #endif
+ 		if (!nvram_match("t_fix1", (char *)name)) {
+-			nvram_set("boot_wait", "on");	/* failsafe for CFE flash */
+-			nvram_set("wait_time", "10");	/* failsafe for CFE flash */
+-			nvram_set("uart_en", "1");	/* failsafe for CFE flash */
+-			nvram_set("router_name", "X-R1D");
++			/* R2D: keep the stock values - with boot_wait=on the Xiaomi CFE flashes any TRX served by 192.168.1.2 */
++			if (!nvram_match("model", "R2D")) {
++				nvram_set("boot_wait", "on");	/* failsafe for CFE flash */
++				nvram_set("wait_time", "10");	/* failsafe for CFE flash */
++				nvram_set("uart_en", "1");	/* failsafe for CFE flash */
++			}
++			nvram_set("router_name", nvram_match("model", "R2D") ? "X-R2D" : "X-R1D");
+ 			nvram_set("lan_hostname", "MiWiFi");
+ 			nvram_set("wan_hostname", "MiWiFi");
+ 
+@@ -8502,7 +8612,8 @@ static int init_nvram(void)
+ 			nvram_set("wl0_vifnames", "wl0.1 wl0.2 wl0.3");
+ 			nvram_set("wl1_vifnames", "wl1.1 wl1.2 wl1.3");
+ 
+-			/* fix MAC addresses */
++			/* fix MAC addresses (R2D: keep the stock per-radio MACs from Xiaomi nvram) */
++			if (!nvram_match("model", "R2D")) {
+ 			strlcpy(s, nvram_safe_get("et0macaddr"), sizeof(s));	/* get et0 MAC address for LAN */
+ 			inc_mac(s, +2, sizeof(s));				/* MAC + 1 will be for WAN */
+ 			nvram_set("pci/2/1/macaddr", s);			/* fix WL mac for 2,4G */
+@@ -8510,6 +8621,7 @@ static int init_nvram(void)
+ 			inc_mac(s, +4, sizeof(s));				/* do not overlap with VIFs */
+ 			nvram_set("pci/1/1/macaddr", s);			/* fix WL mac for 5G */
+ 			nvram_set("wl0_hwaddr", s);
++			}
+ 
+ 			/* 5G settings */
+ 			nvram_set("wl0_channel", "36");
+@@ -8535,6 +8647,9 @@ static int init_nvram(void)
+ 
+ 			nvram_set("wl0_ssid", "FreshTomato50");
+ 			nvram_set("wl1_ssid", "FreshTomato24");
++			/* R2D: keep the stock Wi-Fi key, but make the web UI show it */
++			if (nvram_match("model", "R2D"))
++				r2d_sync_wl_security();
+ 
+ 			/* misc wifi settings */
+ 			nvram_set("wl1_vreqd", "0"); /* do not enable vhtmode and vht_features for 2G NON-AC PHY */
+@@ -8733,8 +8848,30 @@ static int init_nvram(void)
+ 				{ 0, 0, 0 }
+ 			};
+ 
++			if (!nvram_match("model", "R2D")) { /* R2D: keep stock radio calibration */
+ 			set_defaults(r1d_pci_2_1_params, "pci/2/1/%s");
+ 			set_defaults(r1d_pci_1_1_params, "pci/1/1/%s");
++			}
++		}
++		/* Xiaomi R2D: interface names are forced on every boot, because a boot of the stock fallback (os1)
++		 * rewrites them in the shared nvram (lan_ifname=br-lan, wl0_ifname=wl0, ...). eth1 = 5 GHz (wl0), eth2 = 2.4 GHz (wl1). */
++		if (nvram_match("model", "R2D")) {
++			nvram_set("lan_ifname", "br0");
++			nvram_set("lan_ifnames", "vlan1 eth1 eth2");
++			nvram_set("landevs", "vlan1 wl0 wl1");
++			nvram_set("wan_ifnames", "vlan2");
++			nvram_set("wan_ifnameX", "vlan2");
++			nvram_set("wandevs", "vlan2");
++			nvram_set("wl_ifnames", "eth1 eth2");
++			nvram_set("wl_ifname", "eth1");
++			nvram_set("wl0_ifname", "eth1");
++			nvram_set("wl1_ifname", "eth2");
++			nvram_set("vlan1hwname", "et0");
++			nvram_set("vlan2hwname", "et0");
++			r2d_drop_miwifi_ready();
++			/* stock guest-LAN leftover: lan1 has no interface but an IP, httpd then fails to bind 192.168.2.1 */
++			if (!*nvram_safe_get("lan1_ifname") && *nvram_safe_get("lan1_ipaddr"))
++				nvram_set("lan1_ipaddr", "");
+ 		}
+ 		break;
+ 	case MODEL_EA6350v1:
+@@ -10812,9 +10949,15 @@ int init_main(int argc, char *argv[])
+ 			start_usb();
+ 
+ 			xstart("/usr/sbin/mymotd", "init");
++			/* Xiaomi R2D: fan control (native port of stock fan_tmp.sh, see r2d_fan.c) */
++			if (nvram_match("model", "R2D"))
++				xstart("r2dfan");
+ 			run_nvscript("script_init", NULL, 2);
+ 
+ 			file_unlock(fd); /* allow to process usb hotplug events */
++			/* Xiaomi R2D: replay the lost uevents of the internal SATA disk to get it automounted */
++			if (nvram_match("model", "R2D"))
++				r2d_coldplug_sata();
+ #ifdef TCONFIG_USB
+ 			/*
+ 			 * On RESTART some partitions can stay mounted if they are busy at the moment.
+diff --git a/release/src-rt-6.x.4708/router/shared/id.c b/release/src-rt-6.x.4708/router/shared/id.c
+index c16727afa..e5444f8a8 100644
+--- a/release/src-rt-6.x.4708/router/shared/id.c
++++ b/release/src-rt-6.x.4708/router/shared/id.c
+@@ -128,7 +128,7 @@ static int get_model_once(void)
+ 		if ((nvram_match("boardrev", "0x1101")) && (nvram_match("boardnum", "32"))) return MODEL_R8000;
+ 		if ((nvram_match("boardrev", "0x1101")) && (nvram_match("model", "RT-AC3200"))) return MODEL_RTAC3200;
+ #endif
+-		if ((nvram_match("boardrev", "0x1301")) && (nvram_match("model", "R1D"))) return MODEL_R1D;
++		if ((nvram_match("boardrev", "0x1301")) && ((nvram_match("model", "R1D")) || (nvram_match("model", "R2D")))) return MODEL_R1D; /* R2D = R1D + 3 LAN ports */
+ 		if ((nvram_match("boardrev", "0x1100")) && (nvram_match("model", "RT-N18U"))) return MODEL_RTN18U;
+ 		if ((nvram_match("boardrev", "0x1100")) && (nvram_match("model", "RT-AC56U"))) return MODEL_RTAC56U;
+ 		if (nvram_match("odmpid", "RT-AC1900P")) return MODEL_RTAC1900P;

@@ -1,0 +1,27 @@
+#!/bin/busybox sh
+# FreshTomato for Xiaomi R2D - boot initramfs.
+# Attaches UBI on mtd "rootfs0" (stock layout: VID header @2048), mounts volume "ftroot" and starts FreshTomato.
+# No rootfs -> rescue shell: telnet 192.168.1.1 (LAN), reboot after 10 minutes.
+/bin/busybox mkdir -p /bin /proc /sys /dev /newroot
+/bin/busybox --install -s /bin
+export PATH=/bin
+mount -t proc proc /proc; mount -t sysfs sysfs /sys; mount -t devtmpfs devtmpfs /dev
+log() { echo "r2d-init: $*" > /dev/kmsg; }
+
+# fan: medium level (10 of 20) until the r2dfan daemon takes over; registers as in rc/r2d_fan.c
+rmw() { v=$(devmem $1 32); devmem $1 32 $(printf 0x%08X $(( (v & ~$2) | $3 ))); }
+rmw 0x1800C1C0 0x100 0; rmw 0x18001028 0 1; rmw 0x18002024 0xFC0000 0x40000
+rmw 0x18002000 1 0; devmem 0x18002004 32 20; devmem 0x18002008 32 10; usleep 400000; rmw 0x18002000 0 1
+
+M=$(grep '"rootfs0"' /proc/mtd | cut -d: -f1); M=${M#mtd}
+if [ -n "$M" ] && ubiattach -m $M -d 0 -O 2048 /dev/ubi_ctrl >/dev/null 2>&1 &&
+   mount -t ubifs ubi0:ftroot /newroot 2>/dev/null && [ -x /newroot/sbin/rc ] && [ -x /newroot/sbin/preinit ]; then
+	log "rootfs = ubi0:ftroot (mtd$M)"
+	exec chroot /newroot /sbin/preinit
+fi
+
+log "NO ROOTFS (mtd$M) - rescue shell: telnet 192.168.1.1, reboot in 600 s"
+umount /newroot 2>/dev/null
+insmod /lib/modules/et.ko; sleep 3; ip link set eth0 up; vconfig add eth0 1; ip link set eth0.1 up
+ip addr add 192.168.1.1/24 dev eth0.1; telnetd -l /bin/sh -b 192.168.1.1
+sleep 600; reboot -f

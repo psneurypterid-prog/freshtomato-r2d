@@ -1,0 +1,16 @@
+diff --git a/release/src-rt-6.x.4708/linux/linux-2.6.36/usr/Makefile b/release/src-rt-6.x.4708/linux/linux-2.6.36/usr/Makefile
+index 6fb83d395..be19112a1 100755
+--- a/release/src-rt-6.x.4708/linux/linux-2.6.36/usr/Makefile
++++ b/release/src-rt-6.x.4708/linux/linux-2.6.36/usr/Makefile
+@@ -68,8 +68,11 @@ endif
+ 
+ ifeq ($(MFG_WAR), 1)
+ BUILD_MFG = 0
++# R2D port: keep an explicitly configured initramfs on the MFG_WAR pass
++ifeq ($(CONFIG_INITRAMFS_SOURCE),"")
+ ramfs-input = -d
+ endif
++endif
+ 
+ ifeq ($(BUILD_MFG), 0)
+ $(obj)/initramfs_data.cpio$(suffix_y): $(obj)/gen_init_cpio $(deps_initramfs) klibcdirs

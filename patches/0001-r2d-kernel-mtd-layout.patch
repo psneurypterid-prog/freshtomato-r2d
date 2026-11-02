@@ -1,0 +1,88 @@
+diff --git a/release/src-rt-6.x.4708/linux/linux-2.6.36/arch/arm/mach-brcm-hnd/board_ns.c b/release/src-rt-6.x.4708/linux/linux-2.6.36/arch/arm/mach-brcm-hnd/board_ns.c
+index b1224a30e..80cbe5350 100644
+--- a/release/src-rt-6.x.4708/linux/linux-2.6.36/arch/arm/mach-brcm-hnd/board_ns.c
++++ b/release/src-rt-6.x.4708/linux/linux-2.6.36/arch/arm/mach-brcm-hnd/board_ns.c
+@@ -866,6 +866,32 @@ lookup_nflash_rootfs_offset(hndnand_t *nfl, struct mtd_info *mtd, int offset, si
+ 	return shift + off;
+ }
+ 
++
++/* ---- Xiaomi R2D port: replicate stock MTD layout (8 parts on nflash) ---- */
++#ifndef R2D_MTD_MASK
++#define R2D_MTD_MASK MTD_WRITEABLE	/* stock-owned partitions stay read-only */
++#endif
++#ifndef R2D_FT_MASK
++#define R2D_FT_MASK 0			/* FreshTomato-owned: nvram, os0, rootfs0 */
++#endif
++/* CONFIG_CRASHLOG: only "crash" (stock crash-log partition) is writable, for nvram_store_crash() */
++#ifdef CONFIG_CRASHLOG
++#define R2D_CRASH_MASK 0
++#else
++#define R2D_CRASH_MASK R2D_MTD_MASK
++#endif
++static struct mtd_partition r2d_nflash_parts[] = {
++	{ .name = "boot",       .offset = 0x000000, .size = 0x080000, .mask_flags = R2D_MTD_MASK },
++	{ .name = "nvram",      .offset = 0x080000, .size = 0x080000, .mask_flags = R2D_FT_MASK },
++	{ .name = "board_data", .offset = 0x100000, .size = 0x040000, .mask_flags = R2D_MTD_MASK },
++	{ .name = "crash",      .offset = 0x140000, .size = 0x040000, .mask_flags = R2D_CRASH_MASK },
++	{ .name = "rsvd0",      .offset = 0x180000, .size = 0x080000, .mask_flags = R2D_MTD_MASK },
++	{ .name = "os0",        .offset = 0x200000, .size = 0x400000, .mask_flags = R2D_FT_MASK },
++	{ .name = "os1",        .offset = 0x600000, .size = 0x400000, .mask_flags = R2D_MTD_MASK },
++	{ .name = "rsvd1",      .offset = 0xA00000, .size = 0x600000, .mask_flags = R2D_MTD_MASK },
++	{ .name = NULL }
++};
++
+ struct mtd_partition *
+ init_nflash_mtd_partitions(hndnand_t *nfl, struct mtd_info *mtd, size_t size)
+ {
+@@ -880,6 +906,12 @@ init_nflash_mtd_partitions(hndnand_t *nfl, struct mtd_info *mtd, size_t size)
+ 	uint32 bootossz = nfl_boot_os_size(nfl);
+ 	uint boardnum = bcm_strtoul(nvram_safe_get("boardnum"), NULL, 0);
+ 
++	/* Xiaomi R2D: never fall through to the Netgear R7000 layout (same boardtype/rev) */
++	if (nvram_match("model", "R2D")) {
++		printk(KERN_NOTICE "Xiaomi R2D: stock nflash layout, only nvram/os0/crash writable\n");
++		return r2d_nflash_parts;
++	}
++
+ 	/* EA6700 */
+ 	if (((boardnum == 1) || (nvram_get("boardnum") == NULL)) &&
+ 	    nvram_match("boardtype", "0xF646") &&
+diff --git a/release/src-rt-6.x.4708/linux/linux-2.6.36/drivers/mtd/bcm947xx/nand/brcmnand.c b/release/src-rt-6.x.4708/linux/linux-2.6.36/drivers/mtd/bcm947xx/nand/brcmnand.c
+index 6b622c77f..4173428d1 100644
+--- a/release/src-rt-6.x.4708/linux/linux-2.6.36/drivers/mtd/bcm947xx/nand/brcmnand.c
++++ b/release/src-rt-6.x.4708/linux/linux-2.6.36/drivers/mtd/bcm947xx/nand/brcmnand.c
+@@ -773,6 +773,21 @@ struct mtd_partition brcmnand_parts[] = {
+ 	}
+ };
+ 
++
++/* ---- Xiaomi R2D port: replicate stock MTD layout (3 parts on brcmnand) ---- */
++#ifndef R2D_MTD_MASK
++#define R2D_MTD_MASK MTD_WRITEABLE	/* stock-owned partitions stay read-only */
++#endif
++#ifndef R2D_FT_MASK
++#define R2D_FT_MASK 0			/* FreshTomato-owned: nvram, os0, rootfs0 */
++#endif
++static struct mtd_partition r2d_brcmnand_parts[] = {
++	{ .name = "rootfs0", .offset = 0x01000000, .size = 0x08000000, .mask_flags = R2D_FT_MASK },
++	{ .name = "rootfs1", .offset = 0x09000000, .size = 0x08000000, .mask_flags = R2D_MTD_MASK },
++	{ .name = "overlay", .offset = 0x11000000, .size = 0x0F000000, .mask_flags = R2D_MTD_MASK },
++	{ .name = NULL }
++};
++
+ struct mtd_partition *
+ init_brcmnand_mtd_partitions(struct mtd_info *mtd, uint64_t size)
+ {
+@@ -781,6 +796,11 @@ init_brcmnand_mtd_partitions(struct mtd_info *mtd, uint64_t size)
+ 	struct nand_chip *chip = mtd->priv;
+ 	struct brcmnand_mtd *brcmnand = chip->priv;
+ 
++	if (nvram_match("model", "R2D")) {
++		printk(KERN_NOTICE "Xiaomi R2D: stock brcmnand layout, only rootfs0 writable\n");
++		return r2d_brcmnand_parts;
++	}
++
+ 	knldev = soc_knl_dev((void *)brcmnand->sih);
+ 	if (knldev == SOC_KNLDEV_NANDFLASH)
+ 		offset = nfl_boot_os_size(brcmnand->nfl);

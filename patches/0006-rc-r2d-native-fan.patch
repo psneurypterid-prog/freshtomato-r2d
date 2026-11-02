@@ -1,0 +1,476 @@
+diff --git a/release/src-rt-6.x.4708/router/rc/Makefile b/release/src-rt-6.x.4708/router/rc/Makefile
+index 35844dbd8..a632acce6 100644
+--- a/release/src-rt-6.x.4708/router/rc/Makefile
++++ b/release/src-rt-6.x.4708/router/rc/Makefile
+@@ -39,7 +39,7 @@ ifeq ($(TCONFIG_ROAM),y)
+ endif
+ 
+ ifeq ($(TCONFIG_BCMARM),y)
+- OBJS += bcmutils.o
++ OBJS += bcmutils.o r2d_fan.o
+ endif
+ 
+ ifeq ($(TCONFIG_BCMWL6),y)
+@@ -159,6 +159,9 @@ ifeq ($(TCONFIG_RTNPLUS),y)
+ endif
+ ifeq ($(TCONFIG_FANCTRL),y)
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc phy_tempsense
++endif
++ifeq ($(TCONFIG_BCMARM),y)
++	@cd $(INSTALLDIR)/sbin && ln -sf rc r2dfan
+ endif
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc rcheck
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc radio
+diff --git a/release/src-rt-6.x.4708/router/rc/r2d_fan.c b/release/src-rt-6.x.4708/router/rc/r2d_fan.c
+new file mode 100644
+index 000000000..afb272502
+--- /dev/null
++++ b/release/src-rt-6.x.4708/router/rc/r2d_fan.c
+@@ -0,0 +1,419 @@
++/*
++ * Xiaomi R2D (Mi Router HD) fan control - native replacement for the stock
++ * fan_tmp.sh + fan_tmp_ctrl (no Xiaomi binaries needed).
++ *
++ * Hardware (reverse engineered from stock fan_tmp_ctrl):
++ *  - temperature: LM75-compatible sensor, I2C address 0x48, register 0
++ *    (MSB = integer degC), on a bit-banged bus SCL = GPIO4, SDA = GPIO5
++ *  - tachometer: GPIO9, 2 pulses per revolution
++ *  - fan: PWM channel 0 of the iProc PWM block (pin GPIO8), 20 steps;
++ *    output is inverted: level L -> duty register (20 - L)
++ *
++ * Usage: r2dfan            - daemon (control loop, status in /tmp/r2d-fan.status)
++ *        r2dfan temp       - print temperature
++ *        r2dfan rpm        - print fan speed
++ *        r2dfan set LEVEL  - set fan level 0..20 (0 = stopped)
++ *        r2dfan status
++ * nvram: r2d_fan_low / r2d_fan_mid / r2d_fan_high thresholds (degC), defaults 50/55/64 like stock.
++ */
++
++#include "rc.h"
++
++#include <fcntl.h>
++#include <signal.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <sys/time.h>
++#include <sys/file.h>
++#include <linux_gpio.h>
++
++#define R2D_SCL		(1 << 4)
++#define R2D_SDA		(1 << 5)
++#define R2D_TACH	(1 << 9)
++#define LM75_ADDR	0x48
++
++#define REG_BASE	0x18000000
++#define REG_SIZE	0xD000
++#define CCB_AUX_SEL	0x1028		/* ChipcommonB aux_sel, bit 0 */
++#define PWM_CTL		0x2000		/* bit 0: channel 0 enable */
++#define PWM_PERIOD0	0x2004
++#define PWM_DUTY0	0x2008
++#define PWM_PRESCALE	0x2024		/* bits 18..23: channel 0 prescale */
++#define DMU_PINMUX	0xC1C0		/* bit 8 clear: GPIO8 -> PWM0 */
++
++#define FAN_STEPS	20
++#define STATUS_FILE	"/tmp/r2d-fan.status"
++#define PID_FILE	"/var/run/r2dfan.pid"
++
++static int gpio_fd = -1;
++static int bus_err;	/* set by any failed GPIO ioctl, checked per I2C transaction */
++
++/* ---- GPIO / bit-banged I2C ---- */
++
++static unsigned int gio(int req, unsigned int mask, unsigned int val)
++{
++	struct gpio_ioctl g = { .mask = mask, .val = val };
++
++	if (ioctl(gpio_fd, req, &g) < 0) {
++		bus_err = 1;
++		return 0;
++	}
++	return g.val;
++}
++
++static void pin_out(unsigned int bit, int v)
++{
++	/* value first, then enable the driver: no glitch when switching direction */
++	gio(GPIO_IOC_RESERVE, bit, bit);
++	gio(GPIO_IOC_OUT, bit, v ? bit : 0);
++	gio(GPIO_IOC_OUTEN, bit, bit);
++}
++
++static int pin_in(unsigned int bit)
++{
++	gio(GPIO_IOC_RESERVE, bit, bit);
++	gio(GPIO_IOC_OUTEN, bit, 0);
++	return (gio(GPIO_IOC_IN, bit, 0) & bit) != 0;
++}
++
++#define I2C_DELAY()	usleep(5)
++
++static void i2c_start(void)
++{
++	pin_out(R2D_SDA, 1); pin_out(R2D_SCL, 1); I2C_DELAY();
++	pin_out(R2D_SDA, 0); I2C_DELAY();
++	pin_out(R2D_SCL, 0); I2C_DELAY();
++}
++
++static void i2c_stop(void)
++{
++	pin_out(R2D_SDA, 0); I2C_DELAY();
++	pin_out(R2D_SCL, 1); I2C_DELAY();
++	pin_out(R2D_SDA, 1); I2C_DELAY();
++}
++
++/* returns 0 on ACK */
++static int i2c_write(unsigned char b)
++{
++	int i, nak;
++
++	for (i = 7; i >= 0; i--) {
++		pin_out(R2D_SDA, (b >> i) & 1); I2C_DELAY();
++		pin_out(R2D_SCL, 1); I2C_DELAY();
++		pin_out(R2D_SCL, 0); I2C_DELAY();
++	}
++	(void) pin_in(R2D_SDA);
++	pin_out(R2D_SCL, 1); I2C_DELAY();
++	nak = pin_in(R2D_SDA);
++	pin_out(R2D_SCL, 0); I2C_DELAY();
++	return nak;
++}
++
++static unsigned char i2c_read(int ack)
++{
++	unsigned char b = 0;
++	int i;
++
++	(void) pin_in(R2D_SDA);
++	for (i = 7; i >= 0; i--) {
++		pin_out(R2D_SCL, 1); I2C_DELAY();
++		if (pin_in(R2D_SDA))
++			b |= 1 << i;
++		pin_out(R2D_SCL, 0); I2C_DELAY();
++	}
++	pin_out(R2D_SDA, ack ? 0 : 1); I2C_DELAY();
++	pin_out(R2D_SCL, 1); I2C_DELAY();
++	pin_out(R2D_SCL, 0); I2C_DELAY();
++	return b;
++}
++
++/* LM75 register 0; returns 0 and degC in *t, or -1.
++ * The bus is driven push-pull like the stock tool does (no pull-ups are known on this board). */
++static int read_temp_once(int *t)
++{
++	unsigned char msb, lsb;
++	int err = 0;
++
++	bus_err = 0;
++	i2c_start();
++	err |= i2c_write(LM75_ADDR << 1);
++	err |= i2c_write(0x00);
++	i2c_start();				/* repeated start */
++	err |= i2c_write((LM75_ADDR << 1) | 1);
++	msb = i2c_read(1);
++	lsb = i2c_read(0);
++	i2c_stop();
++	(void) lsb;
++	if (err || bus_err)
++		return -1;
++	*t = (signed char) msb;
++	return 0;
++}
++
++static int read_temp(int *t)
++{
++	int i, a, b, lk, r = -1;
++
++	/* serialize bus access between the daemon and manual "r2dfan temp" */
++	if ((lk = open("/var/lock/r2d-i2c", O_RDWR | O_CREAT, 0600)) < 0)
++		return -1;
++	if (flock(lk, LOCK_EX) != 0) {
++		close(lk);
++		return -1;
++	}
++	for (i = 0; i < 3; i++) {
++		/* two equal consecutive reads in a plausible range; 0 degC is rejected on purpose:
++		 * a stuck-low SDA reads as ACK + all-zero data, and a running router is never at 0 degC */
++		if (read_temp_once(&a) == 0 && read_temp_once(&b) == 0 && a == b && a > 0 && a < 125) {
++			*t = a;
++			r = 0;
++			break;
++		}
++		usleep(100000);
++	}
++	close(lk);
++	return r;
++}
++
++static long usec_since(const struct timeval *t0)
++{
++	struct timeval t;
++
++	gettimeofday(&t, NULL);
++	return (t.tv_sec - t0->tv_sec) * 1000000L + (t.tv_usec - t0->tv_usec);
++}
++
++/* rpm from the time of 2 tach pulses (= 1 revolution); 0 if no pulses within 1 s */
++static int read_rpm(void)
++{
++	struct timeval t0, t1;
++	int last, cur, edges = 0;
++	long dt;
++
++	gio(GPIO_IOC_RESERVE, R2D_TACH, R2D_TACH);
++	gio(GPIO_IOC_OUTEN, R2D_TACH, 0);
++	gettimeofday(&t0, NULL);
++	last = (gio(GPIO_IOC_IN, R2D_TACH, 0) & R2D_TACH) != 0;
++	while (usec_since(&t0) < 1000000L) {
++		cur = (gio(GPIO_IOC_IN, R2D_TACH, 0) & R2D_TACH) != 0;
++		if (cur && !last) {
++			if (++edges == 1)
++				gettimeofday(&t1, NULL);
++			else if (edges == 3) {
++				dt = usec_since(&t1);
++				return dt > 0 ? (int) (60000000L / dt) : 0;
++			}
++		}
++		last = cur;
++	}
++	return 0;
++}
++
++/* ---- PWM ---- */
++
++static volatile unsigned int *regs;
++
++#define REG(o)	regs[(o) >> 2]
++
++static int pwm_init(void)
++{
++	int fd;
++	void *p;
++
++	if (regs)
++		return 0;
++	if ((fd = open("/dev/mem", O_RDWR | O_SYNC)) < 0)
++		return -1;
++	p = mmap(NULL, REG_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, REG_BASE);
++	close(fd);
++	if (p == MAP_FAILED)
++		return -1;
++	regs = p;
++	REG(DMU_PINMUX) &= ~(1u << 8);
++	REG(CCB_AUX_SEL) |= 1;
++	REG(PWM_PRESCALE) = (REG(PWM_PRESCALE) & ~(63u << 18)) | (1u << 18);
++	return 0;
++}
++
++/* returns 0 on success */
++static int fan_set(int level)
++{
++	if (level < 0)
++		level = 0;
++	if (level > FAN_STEPS)
++		level = FAN_STEPS;
++	if (pwm_init() != 0)
++		return -1;
++	REG(PWM_CTL) &= ~1u;			/* new period/duty are latched on enable */
++	REG(PWM_PERIOD0) = FAN_STEPS;
++	REG(PWM_DUTY0) = FAN_STEPS - level;
++	usleep(400000);
++	REG(PWM_CTL) |= 1u;
++	return 0;
++}
++
++/* ---- daemon ---- */
++
++static volatile int quit;
++
++static void sig_quit(int sig)
++{
++	quit = 1;
++}
++
++static int nv_int(const char *name, int def)
++{
++	const char *v = nvram_get(name);
++
++	return (v && *v) ? atoi(v) : def;
++}
++
++static void run(void)
++{
++	int high = nv_int("r2d_fan_high", 64), mid = nv_int("r2d_fan_mid", 55), low = nv_int("r2d_fan_low", 50);
++	int fan = 12, oldfan = -1, warn = 0, stall = 0, pwmerr = 0, rpm = -1, t = 0, ok, n = 0, i, set, pf;
++	char buf[16];
++	FILE *f;
++
++	/* single instance: hold an exclusive lock on the pid file for the daemon's lifetime */
++	if ((pf = open(PID_FILE, O_RDWR | O_CREAT, 0644)) < 0 || flock(pf, LOCK_EX | LOCK_NB) != 0) {
++		syslog(LOG_ERR, "already running or %s not lockable", PID_FILE);
++		return;
++	}
++	snprintf(buf, sizeof(buf), "%d\n", getpid());
++	if (ftruncate(pf, 0) != 0 || write(pf, buf, strlen(buf)) < 0)
++		syslog(LOG_WARNING, "cannot write %s", PID_FILE);
++
++	signal(SIGTERM, sig_quit);
++	signal(SIGINT, sig_quit);
++	syslog(LOG_INFO, "started: thresholds low=%d mid=%d high=%d", low, mid, high);
++
++	while (!quit) {
++		ok = (read_temp(&t) == 0);
++		if (!ok) {
++			fan = 15;
++			if (warn != 2)
++				syslog(LOG_WARNING, "temperature read failed, fan -> 15");
++			warn = 2;
++		}
++		else if (t >= high) {
++			fan = 15;
++			if (warn != 1)
++				syslog(LOG_WARNING, "temperature %d is too high, fan -> 15", t);
++			warn = 1;
++		}
++		else {
++			if (warn)
++				syslog(LOG_INFO, "temperature %d is normal again", t);
++			warn = 0;
++			if (t > mid) {
++				if (fan < 12)
++					fan++;
++			}
++			else if (t >= low)
++				fan = (fan > 6) ? fan - 1 : 6;
++			else
++				fan = 5;
++		}
++		if (fan > 15)
++			fan = 15;
++
++		/* a stalled fan gets full power until it spins again */
++		set = stall ? FAN_STEPS : fan;
++		if (set != oldfan) {
++			if (fan_set(set) == 0) {
++				oldfan = set;
++				pwmerr = 0;
++			}
++			else {
++				oldfan = -1;	/* retry on the next round */
++				if (!pwmerr++)
++					syslog(LOG_ERR, "cannot access the PWM registers (/dev/mem)");
++			}
++		}
++
++		/* tach every ~2 min, every round while stalled */
++		if (stall || (n++ % 4) == 0) {
++			if (stall)
++				sleep(3);	/* let it spin up after the kick */
++			rpm = read_rpm();
++			if (rpm < 200) {
++				if (++stall == 2)
++					syslog(LOG_WARNING, "WARNING: fan does not spin (level %d, rpm %d)", set, rpm);
++			}
++			else {
++				if (stall >= 2)
++					syslog(LOG_INFO, "fan spins again (%d rpm)", rpm);
++				stall = 0;
++			}
++		}
++
++		if ((f = fopen(STATUS_FILE ".tmp", "w"))) {
++			if (ok)
++				fprintf(f, "temp=%d level=%d rpm=%d time=%ld\n", t, set, rpm, (long) time(NULL));
++			else
++				fprintf(f, "temp=? level=%d rpm=%d time=%ld\n", set, rpm, (long) time(NULL));
++			fclose(f);
++			rename(STATUS_FILE ".tmp", STATUS_FILE);
++		}
++
++		for (i = 0; i < 30 && !quit; i++)
++			sleep(1);
++	}
++
++	fan_set(12);
++	syslog(LOG_INFO, "stopped, fan left at level 12");
++	unlink(PID_FILE);
++	close(pf);
++}
++
++int r2dfan_main(int argc, char *argv[])
++{
++	int t;
++
++	if ((gpio_fd = open("/dev/gpio", O_RDWR)) < 0) {
++		perror("/dev/gpio");
++		return 1;
++	}
++	openlog("r2d-fan", LOG_PID, LOG_DAEMON);
++
++	if (argc < 2) {
++		if (daemon(0, 0) < 0)
++			return 1;
++		run();
++		return 0;
++	}
++	if (!strcmp(argv[1], "temp")) {
++		if (read_temp(&t) != 0) {
++			fprintf(stderr, "temperature read failed\n");
++			return 1;
++		}
++		printf("%d\n", t);
++	}
++	else if (!strcmp(argv[1], "rpm"))
++		printf("%d\n", read_rpm());
++	else if (!strcmp(argv[1], "set") && argc > 2) {
++		t = atoi(argv[2]);
++		if (t < 0 || t > FAN_STEPS) {
++			fprintf(stderr, "level 0..%d\n", FAN_STEPS);
++			return 1;
++		}
++		if (fan_set(t) != 0) {
++			perror("/dev/mem");
++			return 1;
++		}
++	}
++	else if (!strcmp(argv[1], "status")) {
++		char buf[128];
++
++		if (f_read_string(STATUS_FILE, buf, sizeof(buf)) > 0)
++			fputs(buf, stdout);
++		t = (f_read_string(PID_FILE, buf, sizeof(buf)) > 0) ? atoi(buf) : 0;
++		printf("%s\n", (t > 0 && kill(t, 0) == 0) ? "running" : "not running");
++	}
++	else {
++		fprintf(stderr, "usage: r2dfan [temp|rpm|set LEVEL|status]\n");
++		return 1;
++	}
++	return 0;
++}
+diff --git a/release/src-rt-6.x.4708/router/rc/rc.c b/release/src-rt-6.x.4708/router/rc/rc.c
+index 3b5877c6a..20fc0aff8 100644
+--- a/release/src-rt-6.x.4708/router/rc/rc.c
++++ b/release/src-rt-6.x.4708/router/rc/rc.c
+@@ -880,6 +880,9 @@ static const applets_t applets[] = {
+ #endif
+ #ifdef TCONFIG_FANCTRL
+ 	{ "phy_tempsense",		phy_tempsense_main		},
++#endif
++#ifdef TCONFIG_BCMARM
++	{ "r2dfan",			r2dfan_main			},
+ #endif
+ 	{ "rcheck",			rcheck_main			},
+ 	{ "dhcpc-event",		dhcpc_event_main		},
+diff --git a/release/src-rt-6.x.4708/router/rc/rc.h b/release/src-rt-6.x.4708/router/rc/rc.h
+index b9fac9005..f9e353cec 100644
+--- a/release/src-rt-6.x.4708/router/rc/rc.h
++++ b/release/src-rt-6.x.4708/router/rc/rc.h
+@@ -540,6 +540,9 @@ extern int blink_main(int argc, char *argv[]);
+ extern int blink_br_main(int argc, char *argv[]);
+ #endif
+ 
++/* r2d_fan.c (Xiaomi R2D) */
++extern int r2dfan_main(int argc, char *argv[]);
++
+ /* phy_tempsense.c */
+ #ifdef TCONFIG_FANCTRL
+ extern int phy_tempsense_main(int argc, char *argv[]);
