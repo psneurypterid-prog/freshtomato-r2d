@@ -4,8 +4,6 @@ Unofficial port of [FreshTomato-ARM](https://bitbucket.org/pedro311/freshtomato-
 (小米路由器 / "Mi Router" 2015, BCM4709, 512 MB NAND, built-in 1 TB HDD).
 Not to be confused with the R1D (FreshTomato already supports it) or the R3D ("Mi Router HD").
 
-> Almost all of this was written by an AI agent (Claude Code); a human set the goals and tested it on the router.
-
 *Русская версия ниже.*
 
 ## Status
@@ -99,8 +97,6 @@ GPL-2.0, like FreshTomato and the Linux kernel.
 
 Неофициальный порт FreshTomato-ARM на **Xiaomi Mi Router R2D** (2015, BCM4709, NAND 512 МБ, встроенный HDD 1 ТБ).
 Не путать с R1D (его FreshTomato поддерживает официально) и R3D (Mi Router HD).
-
-> Почти всё здесь написал ИИ-агент (Claude Code); человек ставил задачи и проверял на роутере.
 
 Проверено на одном роутере со стоковой 2.25.209. Всё на свой риск.
 
