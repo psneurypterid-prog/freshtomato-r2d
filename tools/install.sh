@@ -22,7 +22,6 @@ for a in "$@"; do
 done
 
 die() { echo "ERROR: $*"; exit 1; }
-mtdnum() { grep "\"$1\"" /proc/mtd | cut -d: -f1 | sed 's/^mtd//'; }
 
 echo "== checks"
 [ "$(id -u)" = 0 ] || die "run as root"
@@ -34,10 +33,27 @@ done
 [ -f /proc/xiaomi/model ] || [ -d /usr/share/xiaoqiang ] || [ -f /etc/config/xiaoqiang ] || \
 	die "this does not look like the stock firmware; to update FreshTomato, boot stock first (uninstall.sh)"
 
-OS0=$(mtdnum os0); RFS0=$(mtdnum rootfs0)
-[ -n "$OS0" ] && [ -n "$RFS0" ] || die "mtd partitions os0/rootfs0 not found"
-[ "$(grep "\"os0\"" /proc/mtd | cut -d' ' -f2)" = "00400000" ] || die "unexpected os0 size"
-[ "$(grep "\"rootfs0\"" /proc/mtd | cut -d' ' -f2)" = "08000000" ] || die "unexpected rootfs0 size"
+# the FreshTomato kernel has this partition table built in: refuse any router whose flash differs
+MTD_EXPECTED='mtd0: 00080000 00020000 "boot"
+mtd1: 00080000 00020000 "nvram"
+mtd2: 00040000 00020000 "board_data"
+mtd3: 00040000 00020000 "crash"
+mtd4: 00080000 00020000 "rsvd0"
+mtd5: 00400000 00020000 "os0"
+mtd6: 00400000 00020000 "os1"
+mtd7: 00600000 00020000 "rsvd1"
+mtd8: 08000000 00020000 "rootfs0"
+mtd9: 08000000 00020000 "rootfs1"
+mtd10: 0f000000 00020000 "overlay"'
+if [ "$(grep '^mtd' /proc/mtd)" != "$MTD_EXPECTED" ]; then
+	echo "Flash partitions of this router:"; cat /proc/mtd
+	die "unexpected flash layout - this build supports only the stock R2D layout (see README)"
+fi
+OS0=5; RFS0=8
+for m in $OS0 $RFS0; do
+	f=/sys/class/mtd/mtd$m/writesize
+	[ ! -f $f ] || [ "$(cat $f)" = 2048 ] || die "unexpected NAND page size $(cat $f) on mtd$m (need 2048)"
+done
 
 # never overwrite the slot we are running from
 [ "$(nvram get flag_boot_rootfs)" = "1" ] || \

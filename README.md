@@ -46,9 +46,13 @@ You need root SSH on the stock firmware.
    reboot
    ```
    If stock currently runs from slot 0, the installer refuses and prints the command to switch to slot 1 first.
+   It also refuses if the flash partition table differs from the stock R2D one (the FreshTomato kernel has it built in).
    The slot is switched only after the kernel in `os0` has been read back and the new rootfs mounted and checked.
 4. After ~1 minute: **http://192.168.1.1**, login `root` / `admin` — **change the password**.
-   Wi-Fi: `FreshTomato24` / `FreshTomato50` with the Wi-Fi password you had on stock (open if stock Wi-Fi had none).
+   Wi-Fi: `FreshTomato24` / `FreshTomato50` with the Wi-Fi password you had on stock (open if stock Wi-Fi had none;
+   a band whose stock security cannot be carried over is switched off instead).
+   **The router address changes** from 192.168.31.1 to 192.168.1.1, and **WAN starts as DHCP**: with PPPoE / L2TP
+   set up the WAN in Basic → Network first.
 
 ## Go back to stock
 
@@ -118,6 +122,8 @@ GPL-2.0, like FreshTomato and the Linux kernel.
    ```
 4. Через ~минуту: **http://192.168.1.1**, вход `root` / `admin` — **сменить пароль**.
    Wi-Fi `FreshTomato24` / `FreshTomato50` с паролем от стока.
+   **Адрес роутера меняется** с 192.168.31.1 на 192.168.1.1, **WAN стартует как DHCP**: при PPPoE / L2TP сначала
+   настроить WAN в Basic → Network.
 
 **Вернуть сток:** `sh uninstall.sh` из FreshTomato или `nvram set flag_last_success=1; nvram commit; reboot`.
 

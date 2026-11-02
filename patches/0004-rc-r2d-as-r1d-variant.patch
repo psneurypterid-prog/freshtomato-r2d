@@ -1,5 +1,5 @@
 diff --git a/release/src-rt-6.x.4708/router/rc/init.c b/release/src-rt-6.x.4708/router/rc/init.c
-index 3d4bcb606..72637e849 100644
+index 3d4bcb606..8364f39ba 100644
 --- a/release/src-rt-6.x.4708/router/rc/init.c
 +++ b/release/src-rt-6.x.4708/router/rc/init.c
 @@ -1232,7 +1232,7 @@ static int init_vlan_ports(void)
@@ -11,7 +11,7 @@ index 3d4bcb606..72637e849 100644
  		dirty |= check_nv("vlan2ports", "4 5");
  		break;
  
-@@ -2183,6 +2183,113 @@ static void set_reversed_dualband_defaults(void)
+@@ -2183,6 +2183,121 @@ static void set_reversed_dualband_defaults(void)
  }
  #endif /* TCONFIG_BLINK */
  
@@ -90,30 +90,38 @@ index 3d4bcb606..72637e849 100644
 +
 +/* Xiaomi R2D: Wi-Fi encryption and key are inherited from the stock nvram (wlN_akm/_crypto/_wpa_psk), but the
 + * web UI shows wlN_security_mode, which the stock firmware does not set. Derive it once on the first boot so the
-+ * UI tells the truth - otherwise saving the Wireless page unchanged would turn the network into an open one. */
++ * UI tells the truth - otherwise saving the Wireless page unchanged would turn the network into an open one.
++ * A stock setup that cannot be expressed here (unknown akm, key too short) is never opened up: that radio is
++ * switched off until the user configures it. */
 +static void r2d_sync_wl_security(void)
 +{
 +	char akm[64], name[32], *w, *save;
 +	const char *mode;
-+	int u, psk, psk2;
++	int u, psk, psk2, other;
 +
 +	for (u = 0; u <= 1; u++) {
 +		snprintf(name, sizeof(name), "wl%d_akm", u);
 +		strlcpy(akm, nvram_safe_get(name), sizeof(akm));
-+		psk = psk2 = 0;
++		psk = psk2 = other = 0;
 +		for (w = strtok_r(akm, " ", &save); w; w = strtok_r(NULL, " ", &save)) {
 +			if (!strcmp(w, "psk"))
 +				psk = 1;
 +			else if (!strcmp(w, "psk2"))
 +				psk2 = 1;
++			else
++				other = 1;
 +		}
 +		snprintf(name, sizeof(name), "wl%d_wpa_psk", u);
-+		if ((psk || psk2) && strlen(nvram_safe_get(name)) >= 8)
++		if ((psk || psk2) && !other && strlen(nvram_safe_get(name)) >= 8)
 +			mode = (psk && psk2) ? "wpaX_personal" : (psk2 ? "wpa2_personal" : "wpa_personal");
 +		else {
 +			mode = "disabled";
 +			snprintf(name, sizeof(name), "wl%d_akm", u);
 +			nvram_set(name, "");
++			if (psk || psk2 || other) {	/* stock had encryption we cannot reproduce: do not open it */
++				snprintf(name, sizeof(name), "wl%d_radio", u);
++				nvram_set(name, "0");
++			}
 +		}
 +		snprintf(name, sizeof(name), "wl%d_security_mode", u);
 +		nvram_set(name, mode);
@@ -125,7 +133,7 @@ index 3d4bcb606..72637e849 100644
  static int init_nvram(void)
  {
  	int model;
-@@ -8480,10 +8587,13 @@ static int init_nvram(void)
+@@ -8480,10 +8595,13 @@ static int init_nvram(void)
  		nvram_set("usb_usb3", "-1"); /* R1D doesn't have USB 3.0 */
  #endif
  		if (!nvram_match("t_fix1", (char *)name)) {
@@ -143,7 +151,7 @@ index 3d4bcb606..72637e849 100644
  			nvram_set("lan_hostname", "MiWiFi");
  			nvram_set("wan_hostname", "MiWiFi");
  
-@@ -8502,7 +8612,8 @@ static int init_nvram(void)
+@@ -8502,7 +8620,8 @@ static int init_nvram(void)
  			nvram_set("wl0_vifnames", "wl0.1 wl0.2 wl0.3");
  			nvram_set("wl1_vifnames", "wl1.1 wl1.2 wl1.3");
  
@@ -153,7 +161,7 @@ index 3d4bcb606..72637e849 100644
  			strlcpy(s, nvram_safe_get("et0macaddr"), sizeof(s));	/* get et0 MAC address for LAN */
  			inc_mac(s, +2, sizeof(s));				/* MAC + 1 will be for WAN */
  			nvram_set("pci/2/1/macaddr", s);			/* fix WL mac for 2,4G */
-@@ -8510,6 +8621,7 @@ static int init_nvram(void)
+@@ -8510,6 +8629,7 @@ static int init_nvram(void)
  			inc_mac(s, +4, sizeof(s));				/* do not overlap with VIFs */
  			nvram_set("pci/1/1/macaddr", s);			/* fix WL mac for 5G */
  			nvram_set("wl0_hwaddr", s);
@@ -161,7 +169,7 @@ index 3d4bcb606..72637e849 100644
  
  			/* 5G settings */
  			nvram_set("wl0_channel", "36");
-@@ -8535,6 +8647,9 @@ static int init_nvram(void)
+@@ -8535,6 +8655,9 @@ static int init_nvram(void)
  
  			nvram_set("wl0_ssid", "FreshTomato50");
  			nvram_set("wl1_ssid", "FreshTomato24");
@@ -171,7 +179,7 @@ index 3d4bcb606..72637e849 100644
  
  			/* misc wifi settings */
  			nvram_set("wl1_vreqd", "0"); /* do not enable vhtmode and vht_features for 2G NON-AC PHY */
-@@ -8733,8 +8848,30 @@ static int init_nvram(void)
+@@ -8733,8 +8856,30 @@ static int init_nvram(void)
  				{ 0, 0, 0 }
  			};
  
@@ -202,7 +210,7 @@ index 3d4bcb606..72637e849 100644
  		}
  		break;
  	case MODEL_EA6350v1:
-@@ -10812,9 +10949,15 @@ int init_main(int argc, char *argv[])
+@@ -10812,9 +10957,15 @@ int init_main(int argc, char *argv[])
  			start_usb();
  
  			xstart("/usr/sbin/mymotd", "init");
