@@ -73,7 +73,7 @@ From FreshTomato: `sh uninstall.sh` (in the release archive), or
 Base: FreshTomato-ARM `arm-master`, commit `437139c980fec983ce9b09b1cac1c4336dd519e5`, toolchain
 `hndtools-arm-uclibc-7.5` from the same tree (needs a host with glibc ≥ 2.38, e.g. Debian 13).
 
-1. Apply `patches/0001…0004, 0006` with `git apply` in the FreshTomato tree and run `make r1do` once.
+1. Apply `patches/0001…0004, 0006, 0007` with `git apply` in the FreshTomato tree and run `make r1do` once.
 2. Static busybox for the initramfs: copy `release/src-rt-6.x.4708/router/busybox` elsewhere, apply
    `patches/0005-busybox-ubiattach-O.patch` (`patch -p1`), use `config/busybox-initramfs.config`, build with the same toolchain.
 3. Initramfs directory (default `/root/r2d-initramfs`): the static `busybox` and `lib/modules/et.ko`
@@ -90,6 +90,9 @@ Base: FreshTomato-ARM `arm-master`, commit `437139c980fec983ce9b09b1cac1c4336dd5
 | 0004 | rc/shared: R2D as a variant of R1D (interfaces, MACs, Wi-Fi security from stock keys, HDD coldplug, cleanup of Xiaomi provisioning AP) |
 | 0005 | busybox: `ubiattach -O` (VID header offset 2048, as stock formats it) |
 | 0006 | rc: native fan controller `r2dfan` (LM75 over bit-banged I²C, PWM, tachometer) |
+| 0007 | pppd: clear `pppdb` after `tdb_close()` in the forked child (upstream fix 2026-09-28); without it PPPoE WAN redials in a loop with "Fatal signal 11" |
+
+Releases up to r6 are built without 0007: with a PPPoE WAN they need a pppd rebuilt with it.
 
 ## License
 
@@ -124,6 +127,8 @@ GPL-2.0, like FreshTomato and the Linux kernel.
    Wi-Fi `FreshTomato24` / `FreshTomato50` с паролем от стока.
    **Адрес роутера меняется** с 192.168.31.1 на 192.168.1.1, **WAN стартует как DHCP**: при PPPoE / L2TP сначала
    настроить WAN в Basic → Network.
+   В релизах до r6 включительно PPPoE уходит в бесконечный редиал (pppd падает с «Fatal signal 11»):
+   нужен pppd, пересобранный с патчем 0007.
 
 **Вернуть сток:** `sh uninstall.sh` из FreshTomato или `nvram set flag_last_success=1; nvram commit; reboot`.
 

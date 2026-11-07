@@ -1,0 +1,26 @@
+pppd: clear pppdb after tdb_close() in ppp_safe_fork()
+
+Backport of the ppp-project/ppp upstream fix (2026-09-28, "pppd: Clear pppdb
+after tdb_close() in ppp_safe_fork()"). run_program() calls
+ppp_script_setenv("PPP_SCRIPT_INSTANCE") in the forked child, which still sees
+the dangling pppdb and calls tdb_store() on freed memory: the child segfaults
+before exec, so ip-up/ip-down never run and PPPoE redials forever. Only builds
+with PPP_WITH_TDB (multilink) are affected. Log signature:
+"SIOCGIFFLAGS: Bad file descriptor", then "Fatal signal 11".
+
+diff --git a/release/src-rt-6.x.4708/router/pppd/pppd/main.c b/release/src-rt-6.x.4708/router/pppd/pppd/main.c
+index fecf9a038..d9e3abea3 100644
+--- a/release/src-rt-6.x.4708/router/pppd/pppd/main.c
++++ b/release/src-rt-6.x.4708/router/pppd/pppd/main.c
+@@ -1726,8 +1726,10 @@ ppp_safe_fork(int infd, int outfd, int errfd)
+ 	/* Executing in the child */
+ 	ppp_sys_close();
+ #ifdef PPP_WITH_TDB
+-	if (pppdb != NULL)
++	if (pppdb != NULL) {
+ 		tdb_close(pppdb);
++		pppdb = NULL;	/* tdb_close() can't null the caller's pointer */
++	}
+ #endif
+ 
+ 	/* make sure infd, outfd and errfd won't get tromped on below */
