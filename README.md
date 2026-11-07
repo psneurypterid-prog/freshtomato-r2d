@@ -92,7 +92,7 @@ Base: FreshTomato-ARM `arm-master`, commit `437139c980fec983ce9b09b1cac1c4336dd5
 | 0006 | rc: native fan controller `r2dfan` (LM75 over bit-banged I²C, PWM, tachometer) |
 | 0007 | pppd: clear `pppdb` after `tdb_close()` in the forked child (upstream fix 2026-09-28); without it PPPoE WAN redials in a loop with "Fatal signal 11" |
 
-Releases up to r6 are built without 0007: with a PPPoE WAN they need a pppd rebuilt with it.
+Releases up to r6 are built without 0007: with a PPPoE WAN, use r7 or later.
 
 ## License
 
@@ -128,7 +128,7 @@ GPL-2.0, like FreshTomato and the Linux kernel.
    **Адрес роутера меняется** с 192.168.31.1 на 192.168.1.1, **WAN стартует как DHCP**: при PPPoE / L2TP сначала
    настроить WAN в Basic → Network.
    В релизах до r6 включительно PPPoE уходит в бесконечный редиал (pppd падает с «Fatal signal 11»):
-   нужен pppd, пересобранный с патчем 0007.
+   при PPPoE ставьте r7 или новее (в нём патч 0007).
 
 **Вернуть сток:** `sh uninstall.sh` из FreshTomato или `nvram set flag_last_success=1; nvram commit; reboot`.
 
